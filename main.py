@@ -1,15 +1,21 @@
 import os
+import time
 from asyncio import current_task
 from os.path import dirname, abspath
 from typing import List
 
+from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from fastapi import FastAPI, Query, HTTPException
-from google.cloud import translate
+from lxml import etree
 from pydantic import BaseModel
 from pydantic import BaseSettings
+from selenium import webdriver
+from selenium.common import NoSuchElementException
+from selenium.webdriver.common.by import By
 from sqlalchemy import select, desc, asc, delete
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker, async_scoped_session
+
 from models import Word
 
 BASE_DIR = dirname(abspath(__file__))
@@ -22,7 +28,6 @@ class Settings(BaseSettings):
     db_name: str
     db_user: str
     db_password: str
-    google_project_id: str
 
     class Config:
         env_file = os.path.join(BASE_DIR, "defaults.env")
@@ -50,7 +55,6 @@ def get_session():
     return _session
 
 
-
 class WordShort(BaseModel):
     word: str
     examples: List[str] = []
@@ -60,6 +64,55 @@ class WordFull(WordShort):
     definitions: List[str] = []
     synonyms: List[str] = []
     translations: List[str] = []
+
+
+def parse_google_translate(word):
+    translations = []
+    url = f"https://translate.google.com/?sl=en&tl=ru&text={word}&op=translate"
+    driver = webdriver.Chrome()
+    driver.get(url)
+    time.sleep(3)
+    today_tag = "c-wiz"
+    html_file_name = f"translate_page_word_{word}.html"
+    while True:
+        try:
+            translation_xpath = f"/html/body/{today_tag}/div/div[2]/{today_tag}/div[2]/{today_tag}/div[1]/div[2]/div[3]/{today_tag}[2]/div/div[9]/div/div[1]/span[1]/span/span"
+            driver.find_element(By.XPATH, translation_xpath)
+            html_content = driver.page_source
+            soup = BeautifulSoup(html_content, "html.parser")
+            with open(html_file_name, "w", encoding="utf-8") as file:
+                file.write(soup.prettify())
+
+            with open(html_file_name, 'r') as file:
+                html_content = file.read()
+
+            all_translations_table_xpath = f"/html/body/{today_tag}/div/div[2]/{today_tag}/div[2]/{today_tag}/div[2]/{today_tag}/div/div/div[1]/div/div/table" + "/tbody"
+            root = etree.HTML(html_content)
+            xpath_expression = all_translations_table_xpath
+            tbody_elements = root.xpath(xpath_expression)
+
+            for tbody in tbody_elements:
+                tr_elements = tbody.xpath('./tr')
+                for idx, tr in enumerate(tr_elements, start=1):
+                    if idx == 1:
+                        td_text = tr.xpath(f"./th[2]/div/span[2]")
+                        if not td_text:
+                            td_text = tr.xpath(f"./th/div/div/span[2]")
+                    else:
+                        td_text = tr.xpath(f"./th/div/span[2]")
+                        if not td_text:
+                            td_text = tr.xpath(f"./th/div/div/span[2]")
+                    translations.append(td_text[0].text.replace('\n', '').replace(' ', ''))
+            break
+        except NoSuchElementException:
+            button_xpath = f"/html/body/{today_tag}/div/div[2]/{today_tag}/div[2]/{today_tag}/div[1]/div[2]/div[3]/{today_tag}[2]/div/div[7]/div[2]/button"
+            retry_button = driver.find_element(By.XPATH, button_xpath)
+            retry_button.click()
+            time.sleep(1)
+    driver.quit()
+    if os.path.exists(html_file_name):
+        os.remove(html_file_name)
+    return translations
 
 
 @app.get("/word/{word}", response_model=WordFull)
@@ -82,31 +135,18 @@ async def get_word_details(word: str):
             examples=db_word.examples,
         )
     else:
-        client = translate.TranslationServiceAsyncClient()
-        location = "global"
-        parent = f"projects/{settings.google_project_id}/locations/{location}"
-        response = await client.translate_text(
-            request={
-                "parent": parent,
-                "contents": [word],
-                "mime_type": "text/plain",
-                "source_language_code": "en-US",
-                "target_language_code": "ru",
-            }
-        )
-        translations = []
-        for translation in response.translations:
-            translations.append(translation.translated_text)
+        translations = parse_google_translate(word)
+        # TODO: definitions, synonyms, and examples the same as translations
         definitions = ["Definition 1", "Definition 2"]
         synonyms = ["Synonym 1", "Synonym 2"]
         examples = ["Example 1", "Example 2"]
-        # translations = ["translations1", "translations2"]
+
         async with curr_session() as session_:
             new_word = Word(
                 word=word,
                 definitions=definitions,
                 synonyms=synonyms,
-                translations=translations,
+                translations=translations or [],
                 examples=examples,
             )
             session_.add(new_word)
