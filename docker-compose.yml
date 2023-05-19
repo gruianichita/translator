@@ -1,0 +1,27 @@
+version: "3.9"
+services:
+  db:
+    image: postgres
+    restart: always
+    volumes:
+      - ./data:/var/lib/postgresql/data
+    ports:
+      - 5432:5432
+    env_file:
+      - ./local.env
+  migration:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: app
+    environment:
+      WAIT_HOSTS: db:5432
+    command: alembic upgrade head
+    depends_on:
+      - db
+  app:
+    image: app
+    ports:
+      - 8001:8000
+    depends_on:
+      - migration

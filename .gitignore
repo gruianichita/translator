@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyi
+*.egg-info/
+dist/
+build/
+*.egg
+*.log
+*.swp
+
+# Pipenv
+Pipfile.lock
+
+# IDE
+.vscode/
+.idea/
+
+# Environment
+.env
+
+# Miscellaneous
+.DS_Store
+
+
+/data
+local.env
+application_default_credentials.json
